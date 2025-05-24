@@ -7,14 +7,26 @@ use core::panic::PanicInfo;
 /// panic handler
 fn panic(info: &PanicInfo) -> ! {
     if let Some(location) = info.location() {
-        println!(
-            "[kernel] Panicked at {}:{} {}",
-            location.file(),
-            location.line(),
-            info.message().unwrap()
-        );
+        if let Some(message) = info.message() {
+            println!(
+                "[kernel] Panicked at {}:{} {}",
+                location.file(),
+                location.line(),
+                message
+            );
+        } else {
+            println!(
+                "[kernel] Panicked at {}:{}",
+                location.file(),
+                location.line()
+            );
+        }
     } else {
-        println!("[kernel] Panicked: {}", info.message().unwrap());
+        if let Some(message) = info.message() {
+            println!("[kernel] Panicked: {}", message);
+        } else {
+            println!("[kernel] Panicked");
+        }
     }
     shutdown()
 }

@@ -1,4 +1,4 @@
-use riscv::register::sstatus::{self, Sstatus, SPP};
+use riscv::register::sstatus::{Sstatus, SPP};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -19,8 +19,12 @@ impl TrapContext {
     }
     /// init the trap context of an application
     pub fn app_init_context(entry: usize, sp: usize) -> Self {
-        let mut sstatus = sstatus::read(); // CSR sstatus
-        sstatus.set_spp(SPP::User); //previous privilege mode: user mode
+        use riscv::register::sstatus;
+        let sstatus = sstatus::read(); // CSR sstatus
+        // Set previous privilege mode to user mode
+        unsafe {
+            sstatus::set_spp(SPP::User);
+        }
         let mut cx = Self {
             x: [0; 32],
             sstatus,
