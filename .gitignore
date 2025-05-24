@@ -18,3 +18,5 @@ pushall.sh
 ci-user/
 user/
 os/vendor/
+os/qemu.log
+*.log
