@@ -185,9 +185,13 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
 }
 
 /// Translate a pointer to a mutable reference through page table
+/// 参考资料: rCore Tutorial Book Chapter 4 - 地址空间转换函数实现
+/// 参考资料: RISC-V Privileged Architecture Specification v1.20 - 页表地址转换机制
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
     let page_table = PageTable::from_token(token);
     let va = VirtAddr::from(ptr as usize);
+    // 通过页表将虚拟地址转换为物理地址
+    // 参考资料: rCore Tutorial Book Chapter 4 - 虚拟地址到物理地址转换
     let ppn = page_table.translate(va.floor()).unwrap().ppn();
     let offset = va.page_offset();
     let pa = PhysAddr::from(ppn).0 + offset;

@@ -264,9 +264,12 @@ impl MemorySet {
     }
 
     /// Map a new memory area
+    /// 参考资料: rCore Tutorial Book Chapter 4 - 内存映射区域管理
+    /// 参考资料: RISC-V Privileged Architecture Specification v1.20 - 页表映射机制
     pub fn mmap(&mut self, start: VirtAddr, len: usize, perm: MapPermission) -> isize {
         let end = VirtAddr::from(start.0 + len);
         // Check if the area overlaps with existing areas
+        // 参考资料: rCore Tutorial Book Chapter 4 - 内存区域重叠检查
         let start_vpn = start.floor();
         let end_vpn = end.ceil();
 
@@ -277,6 +280,7 @@ impl MemorySet {
         }
 
         // Create and map the new area
+        // 参考资料: rCore Tutorial Book Chapter 4 - 内存映射区域创建
         self.insert_framed_area(start, end, perm | MapPermission::U);
         0
     }

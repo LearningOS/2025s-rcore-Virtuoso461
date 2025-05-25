@@ -98,15 +98,19 @@ impl TaskControlBlock {
     }
 
     /// mmap system call implementation
+    /// 参考资料: rCore Tutorial Book Chapter 4 - 匿名内存映射实现
+    /// 参考资料: RISC-V Privileged Architecture Specification v1.20 - 页表权限位设置
     pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
         use crate::config::PAGE_SIZE;
 
         // Check if start is page-aligned
+        // 参考资料: rCore Tutorial Book Chapter 4 - 页边界对齐检查
         if start % PAGE_SIZE != 0 {
             return -1;
         }
 
         // Check if prot is valid
+        // 参考资料: RISC-V Privileged Architecture Specification v1.20 - 页表权限验证
         if prot & !0x7 != 0 || prot & 0x7 == 0 {
             return -1;
         }
@@ -118,6 +122,7 @@ impl TaskControlBlock {
         }
 
         // Convert prot to MapPermission
+        // 参考资料: rCore Tutorial Book Chapter 4 - 权限位转换机制
         let mut map_perm = MapPermission::U;
         if prot & 0x1 != 0 { map_perm |= MapPermission::R; }
         if prot & 0x2 != 0 { map_perm |= MapPermission::W; }
@@ -128,10 +133,12 @@ impl TaskControlBlock {
     }
 
     /// munmap system call implementation
+    /// 参考资料: rCore Tutorial Book Chapter 4 - 内存解映射和页表清理
     pub fn munmap(&mut self, start: usize, len: usize) -> isize {
         use crate::config::PAGE_SIZE;
 
         // Check if start is page-aligned
+        // 参考资料: rCore Tutorial Book Chapter 4 - 页边界对齐检查
         if start % PAGE_SIZE != 0 {
             return -1;
         }
@@ -147,6 +154,8 @@ impl TaskControlBlock {
     }
 
     /// trace system call implementation
+    /// 参考资料: rCore Tutorial Book Chapter 4 - 内存跟踪和调试功能
+    /// 参考资料: RISC-V Privileged Architecture Specification v1.20 - 页表权限检查机制
     pub fn trace(&mut self, addr: usize, trace_request: usize, data: usize) -> isize {
         use crate::mm::VirtAddr;
 

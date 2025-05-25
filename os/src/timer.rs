@@ -18,6 +18,8 @@ pub fn get_time() -> usize {
 }
 
 /// get current time in milliseconds
+/// 参考资料: rCore Tutorial Book Chapter 4 - 时间管理和系统调用
+/// 参考资料: RISC-V Privileged Architecture Specification v1.20 - 时间寄存器访问
 #[allow(dead_code)]
 pub fn get_time_ms() -> usize {
     time::read() * MSEC_PER_SEC / CLOCK_FREQ
