@@ -1,50 +1,48 @@
 //! Types related to task management
+
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{
-    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
-};
-use crate::trap::{trap_handler, TrapContext};
+use crate::config::{TRAP_CONTEXT, kernel_stack_position};
+use crate::mm::{KERNEL_SPACE, MapPermission, MemorySet, PhysPageNum, VirtAddr};
+use crate::trap::{TrapContext, trap_handler};
 
-/// The task control block (TCB) of a task.
+/// task control block structure
 pub struct TaskControlBlock {
-    /// Save task context
-    pub task_cx: TaskContext,
-
-    /// Maintain the execution status of the current process
+    /// task status: Ready/Running/Exited
     pub task_status: TaskStatus,
-
-    /// Application address space
+    /// task context
+    pub task_cx: TaskContext,
+    /// memory set
     pub memory_set: MemorySet,
-
-    /// The phys page number of trap context
+    /// trap context physical page number
     pub trap_cx_ppn: PhysPageNum,
-
-    /// The size(top addr) of program which is loaded from elf file
+    /// base size
+    #[allow(unused)]
     pub base_size: usize,
-
-    /// Heap bottom
+    /// heap bottom
     pub heap_bottom: usize,
-
-    /// Program break
+    /// program break
     pub program_brk: usize,
+    /// syscall count array
+    pub syscall_count: [usize; 500],
 }
 
 impl TaskControlBlock {
-    /// get the trap context
+    /// Get trap context
     pub fn get_trap_cx(&self) -> &'static mut TrapContext {
         self.trap_cx_ppn.get_mut()
     }
-    /// get the user token
+
+    /// Get user token
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
-    /// Based on the elf info in program, build the contents of task in a new address space
+
+    /// Create a new task control block
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
         let trap_cx_ppn = memory_set
-            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .translate(VirtAddr::from(TRAP_CONTEXT).into())
             .unwrap()
             .ppn();
         let task_status = TaskStatus::Ready;
@@ -63,6 +61,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_count: [0; 500],
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -75,6 +74,7 @@ impl TaskControlBlock {
         );
         task_control_block
     }
+
     /// change the location of the program break. return None if failed.
     pub fn change_program_brk(&mut self, size: i32) -> Option<usize> {
         let old_break = self.program_brk;
@@ -96,13 +96,126 @@ impl TaskControlBlock {
             None
         }
     }
+
+    /// mmap system call implementation
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        use crate::config::PAGE_SIZE;
+
+        // Check if start is page-aligned
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+
+        // Check if prot is valid
+        if prot & !0x7 != 0 || prot & 0x7 == 0 {
+            return -1;
+        }
+
+        // Convert len to page-aligned
+        let len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        if len == 0 {
+            return 0;
+        }
+
+        // Convert prot to MapPermission
+        let mut map_perm = MapPermission::U;
+        if prot & 0x1 != 0 { map_perm |= MapPermission::R; }
+        if prot & 0x2 != 0 { map_perm |= MapPermission::W; }
+        if prot & 0x4 != 0 { map_perm |= MapPermission::X; }
+
+        // Try to map the memory
+        self.memory_set.mmap(VirtAddr(start), len, map_perm)
+    }
+
+    /// munmap system call implementation
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        use crate::config::PAGE_SIZE;
+
+        // Check if start is page-aligned
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+
+        // Convert len to page-aligned
+        let len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        if len == 0 {
+            return 0;
+        }
+
+        // Try to unmap the memory
+        self.memory_set.munmap(VirtAddr(start), len)
+    }
+
+    /// trace system call implementation
+    pub fn trace(&mut self, addr: usize, trace_request: usize, data: usize) -> isize {
+        use crate::mm::VirtAddr;
+
+        match trace_request {
+            0 => {
+                // Read operation
+                let vpn = VirtAddr(addr).floor();
+
+                // Check if the page is mapped and get permissions
+                if let Some(pte) = self.memory_set.translate(vpn) {
+                    if !pte.is_valid() {
+                        return -1;
+                    }
+
+                    // Check if readable and user accessible
+                    if !pte.readable() || !pte.user() {
+                        return -1;
+                    }
+
+                    // Read the byte at the address
+                    let ppn = pte.ppn();
+                    let offset = VirtAddr(addr).page_offset();
+                    let byte_array = ppn.get_bytes_array();
+                    byte_array[offset] as isize
+                } else {
+                    -1
+                }
+            }
+            1 => {
+                // Write operation
+                let vpn = VirtAddr(addr).floor();
+
+                // Check if the page is mapped and get permissions
+                if let Some(pte) = self.memory_set.translate(vpn) {
+                    if !pte.is_valid() {
+                        return -1;
+                    }
+
+                    // Check if writable and user accessible
+                    if !pte.writable() || !pte.user() {
+                        return -1;
+                    }
+
+                    // Write the byte to the address
+                    let ppn = pte.ppn();
+                    let offset = VirtAddr(addr).page_offset();
+                    let byte_array = ppn.get_bytes_array();
+                    byte_array[offset] = data as u8;
+                    0
+                } else {
+                    -1
+                }
+            }
+            2 => {
+                // Syscall count operation
+                if addr < 500 {
+                    self.syscall_count[addr] as isize
+                } else {
+                    -1
+                }
+            }
+            _ => -1,
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]
 /// task status: UnInit, Ready, Running, Exited
 pub enum TaskStatus {
-    /// uninitialized
-    UnInit,
     /// ready to run
     Ready,
     /// running

@@ -5,7 +5,7 @@ use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
 use super::{StepByOne, VPNRange};
 use crate::config::{
-    KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE,
+    MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT, USER_STACK_SIZE,
 };
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
@@ -208,7 +208,7 @@ impl MemorySet {
         // map TrapContext
         memory_set.push(
             MapArea::new(
-                TRAP_CONTEXT_BASE.into(),
+                TRAP_CONTEXT.into(),
                 TRAMPOLINE.into(),
                 MapType::Framed,
                 MapPermission::R | MapPermission::W,
@@ -260,6 +260,48 @@ impl MemorySet {
             true
         } else {
             false
+        }
+    }
+
+    /// Map a new memory area
+    pub fn mmap(&mut self, start: VirtAddr, len: usize, perm: MapPermission) -> isize {
+        let end = VirtAddr::from(start.0 + len);
+        // Check if the area overlaps with existing areas
+        let start_vpn = start.floor();
+        let end_vpn = end.ceil();
+
+        for area in &self.areas {
+            if !(end_vpn <= area.vpn_range.get_start() || start_vpn >= area.vpn_range.get_end()) {
+                return -1; // Overlap detected
+            }
+        }
+
+        // Create and map the new area
+        self.insert_framed_area(start, end, perm | MapPermission::U);
+        0
+    }
+
+    /// Unmap a memory area
+    pub fn munmap(&mut self, start: VirtAddr, len: usize) -> isize {
+        let end = VirtAddr::from(start.0 + len);
+        let start_vpn = start.floor();
+        let end_vpn = end.ceil();
+
+        // Find and remove the area
+        let mut area_index = None;
+        for (i, area) in self.areas.iter().enumerate() {
+            if area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn {
+                area_index = Some(i);
+                break;
+            }
+        }
+
+        if let Some(index) = area_index {
+            let mut area = self.areas.remove(index);
+            area.unmap(&mut self.page_table);
+            0
+        } else {
+            -1
         }
     }
 }
@@ -379,12 +421,7 @@ bitflags! {
     }
 }
 
-/// Return (bottom, top) of a kernel stack in kernel space.
-pub fn kernel_stack_position(app_id: usize) -> (usize, usize) {
-    let top = TRAMPOLINE - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
-    let bottom = top - KERNEL_STACK_SIZE;
-    (bottom, top)
-}
+
 
 /// remap test in kernel space
 #[allow(unused)]

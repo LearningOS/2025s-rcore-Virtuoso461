@@ -11,7 +11,6 @@
 
 mod context;
 mod switch;
-#[allow(clippy::module_inception)]
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
@@ -19,7 +18,7 @@ use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
-use switch::__switch;
+pub use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
@@ -28,11 +27,7 @@ pub use context::TaskContext;
 ///
 /// Functions implemented on `TaskManager` deals with all task state transitions
 /// and task context switching. For convenience, you can find wrappers around it
-/// in the module level.
-///
-/// Most of `TaskManager` are hidden behind the field `inner`, to defer
-/// borrowing checks to runtime. You can see examples on how to use `inner` in
-/// existing functions on `TaskManager`.
+/// in the root of the module.
 pub struct TaskManager {
     /// total number of tasks
     num_app: usize,
@@ -48,33 +43,11 @@ struct TaskManagerInner {
     current_task: usize,
 }
 
-lazy_static! {
-    /// a `TaskManager` global instance through lazy_static!
-    pub static ref TASK_MANAGER: TaskManager = {
-        println!("init TASK_MANAGER");
-        let num_app = get_num_app();
-        println!("num_app = {}", num_app);
-        let mut tasks: Vec<TaskControlBlock> = Vec::new();
-        for i in 0..num_app {
-            tasks.push(TaskControlBlock::new(get_app_data(i), i));
-        }
-        TaskManager {
-            num_app,
-            inner: unsafe {
-                UPSafeCell::new(TaskManagerInner {
-                    tasks,
-                    current_task: 0,
-                })
-            },
-        }
-    };
-}
-
 impl TaskManager {
     /// Run the first task in task list.
     ///
-    /// Generally, the first task in task list is an idle task (we call it zero process later).
-    /// But in ch4, we load apps statically, so the first task is a real app.
+    /// Generally, the first task in task list is an idle task or shell.
+    /// But in ch3, we load apps statically, so the first task is a real app.
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
@@ -92,15 +65,15 @@ impl TaskManager {
     /// Change the status of current `Running` task into `Ready`.
     fn mark_current_suspended(&self) {
         let mut inner = self.inner.exclusive_access();
-        let cur = inner.current_task;
-        inner.tasks[cur].task_status = TaskStatus::Ready;
+        let current = inner.current_task;
+        inner.tasks[current].task_status = TaskStatus::Ready;
     }
 
     /// Change the status of current `Running` task into `Exited`.
     fn mark_current_exited(&self) {
         let mut inner = self.inner.exclusive_access();
-        let cur = inner.current_task;
-        inner.tasks[cur].task_status = TaskStatus::Exited;
+        let current = inner.current_task;
+        inner.tasks[current].task_status = TaskStatus::Exited;
     }
 
     /// Find next task to run and return task id.
@@ -121,16 +94,9 @@ impl TaskManager {
     }
 
     /// Get the current 'Running' task's trap contexts.
-    fn get_current_trap_cx(&self) -> &'static mut TrapContext {
+    fn get_current_trap_cx(&self) -> &mut TrapContext {
         let inner = self.inner.exclusive_access();
         inner.tasks[inner.current_task].get_trap_cx()
-    }
-
-    /// Change the current 'Running' task's program break
-    pub fn change_current_program_brk(&self, size: i32) -> Option<usize> {
-        let mut inner = self.inner.exclusive_access();
-        let cur = inner.current_task;
-        inner.tasks[cur].change_program_brk(size)
     }
 
     /// Switch current `Running` task to the task we have found,
@@ -150,9 +116,70 @@ impl TaskManager {
             }
             // go back to user mode
         } else {
-            panic!("All applications completed!");
+            println!("All applications completed!");
+            use crate::sbi::shutdown;
+            shutdown(false);
         }
     }
+
+    /// Change the current task's program break
+    fn change_current_program_brk(&self, size: i32) -> Option<usize> {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].change_program_brk(size)
+    }
+
+    /// Perform mmap for current task
+    fn current_mmap(&self, start: usize, len: usize, prot: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].mmap(start, len, prot)
+    }
+
+    /// Perform munmap for current task
+    fn current_munmap(&self, start: usize, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].munmap(start, len)
+    }
+
+    /// Perform trace for current task
+    fn current_trace(&self, addr: usize, trace_request: usize, data: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].trace(addr, trace_request, data)
+    }
+
+    /// Increment syscall count for current task
+    fn increment_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        if syscall_id < 500 {
+            inner.tasks[current].syscall_count[syscall_id] += 1;
+        }
+    }
+}
+
+lazy_static! {
+    /// a `TaskManager` instance through lazy_static!
+    pub static ref TASK_MANAGER: TaskManager = {
+        println!("init TASK_MANAGER");
+        let num_app = get_num_app();
+        println!("num_app = {}", num_app);
+        let mut tasks: Vec<TaskControlBlock> = Vec::new();
+        for i in 0..num_app {
+            tasks.push(TaskControlBlock::new(get_app_data(i), i));
+        }
+        TaskManager {
+            num_app,
+            inner: unsafe {
+                UPSafeCell::new(TaskManagerInner {
+                    tasks,
+                    current_task: 0,
+                })
+            },
+        }
+    };
 }
 
 /// Run the first task in task list.
@@ -198,7 +225,27 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
     TASK_MANAGER.get_current_trap_cx()
 }
 
-/// Change the current 'Running' task's program break
+/// Change the current task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Perform mmap for current task
+pub fn current_mmap(start: usize, len: usize, prot: usize) -> isize {
+    TASK_MANAGER.current_mmap(start, len, prot)
+}
+
+/// Perform munmap for current task
+pub fn current_munmap(start: usize, len: usize) -> isize {
+    TASK_MANAGER.current_munmap(start, len)
+}
+
+/// Perform trace for current task
+pub fn current_trace(addr: usize, trace_request: usize, data: usize) -> isize {
+    TASK_MANAGER.current_trace(addr, trace_request, data)
+}
+
+/// Increment syscall count for current task
+pub fn increment_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.increment_syscall_count(syscall_id);
 }
