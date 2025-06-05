@@ -300,6 +300,71 @@ impl MemorySet {
             false
         }
     }
+
+    /// Map a memory region with given protection flags
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> Result<(), ()> {
+        let start_va: VirtAddr = start.into();
+        let end_va: VirtAddr = (start + len).into();
+
+        // Convert protection flags to MapPermission
+        let mut map_perm = MapPermission::U;
+        if prot & 0x1 != 0 { // PROT_READ
+            map_perm |= MapPermission::R;
+        }
+        if prot & 0x2 != 0 { // PROT_WRITE
+            map_perm |= MapPermission::W;
+        }
+        if prot & 0x4 != 0 { // PROT_EXEC
+            map_perm |= MapPermission::X;
+        }
+
+        // Check for overlapping areas
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        for area in &self.areas {
+            // Check if there's any overlap
+            if !(end_vpn <= area.vpn_range.get_start() || start_vpn >= area.vpn_range.get_end()) {
+                return Err(()); // Overlapping area found
+            }
+        }
+
+        // Create and add the new area
+        self.push(
+            MapArea::new(start_va, end_va, MapType::Framed, map_perm),
+            None,
+        );
+        Ok(())
+    }
+
+    /// Unmap a memory region
+    pub fn munmap(&mut self, start: usize, len: usize) -> Result<(), ()> {
+        let start_va: VirtAddr = start.into();
+        let end_va: VirtAddr = (start + len).into();
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+
+        // Find areas that exactly match the unmapping region
+        let mut areas_to_remove = Vec::new();
+        for (idx, area) in self.areas.iter().enumerate() {
+            // Check if the area exactly matches the unmapping region
+            if area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn {
+                areas_to_remove.push(idx);
+                break; // Only one area should match exactly
+            }
+        }
+
+        if areas_to_remove.is_empty() {
+            return Err(()); // No exact matching area to unmap
+        }
+
+        // Remove areas in reverse order to maintain indices
+        for &idx in areas_to_remove.iter().rev() {
+            let mut area = self.areas.remove(idx);
+            area.unmap(&mut self.page_table);
+        }
+
+        Ok(())
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
