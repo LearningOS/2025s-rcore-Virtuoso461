@@ -32,6 +32,16 @@ jobs:
       image: duskmoon/dev-env:rcore-ci
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Rust registry
+        run: |
+          mkdir -p ~/.cargo
+          cat > ~/.cargo/config.toml << EOF
+          [source.crates-io]
+          replace-with = "ustc"
+
+          [source.ustc]
+          registry = "https://mirrors.ustc.edu.cn/crates.io-index"
+          EOF
       - name: Run tests
         run: |
           qemu-system-riscv64 --version
