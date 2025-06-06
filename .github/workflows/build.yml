@@ -32,20 +32,6 @@ jobs:
       image: duskmoon/dev-env:rcore-ci
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Rust registry
-        run: |
-          # Remove any existing cargo config
-          rm -rf ~/.cargo
-          mkdir -p ~/.cargo
-          cat > ~/.cargo/config.toml << EOF
-          [source.crates-io]
-          replace-with = "ustc"
-
-          [source.ustc]
-          registry = "https://mirrors.ustc.edu.cn/crates.io-index"
-          EOF
-          # Also set environment variable to override any registry
-          echo "CARGO_REGISTRIES_CRATES_IO_INDEX=https://mirrors.ustc.edu.cn/crates.io-index" >> $GITHUB_ENV
       - name: Run tests
         run: |
           qemu-system-riscv64 --version
@@ -53,28 +39,9 @@ jobs:
           git config --global --add safe.directory /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
           git clone https://github.com/LearningOS/rCore-Tutorial-Checker-2025S.git ci-user
           git clone https://github.com/LearningOS/rCore-Tutorial-Test-2025S.git ci-user/user
-          # Force override any existing cargo configs
-          find . -name ".cargo" -type d -exec rm -rf {} + 2>/dev/null || true
-          find . -name "config.toml" -path "*/.cargo/*" -delete 2>/dev/null || true
-          # Setup cargo config for all directories
-          mkdir -p ~/.cargo
-          mkdir -p ci-user/.cargo
-          mkdir -p ci-user/user/.cargo
-          for dir in ~/.cargo ci-user/.cargo ci-user/user/.cargo; do
-            cat > $dir/config.toml << EOF
-          [source.crates-io]
-          replace-with = "ustc"
-
-          [source.ustc]
-          registry = "https://mirrors.ustc.edu.cn/crates.io-index"
-          EOF
-          done
-          # Set environment variables to force registry
-          export CARGO_REGISTRIES_CRATES_IO_INDEX=https://mirrors.ustc.edu.cn/crates.io-index
-          export CARGO_HOME=~/.cargo
           ID=`git rev-parse --abbrev-ref HEAD | grep -oP 'ch\K[0-9]'`
           # cd ci-user && make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }}
-          cd ci-user && CARGO_REGISTRIES_CRATES_IO_INDEX=https://mirrors.ustc.edu.cn/crates.io-index make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }} > ../output.txt
+          cd ci-user && make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }} > ../output.txt
           cat ../output.txt
       - name: end
         id: end
