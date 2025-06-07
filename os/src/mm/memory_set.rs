@@ -318,6 +318,95 @@ impl MemorySet {
             false
         }
     }
+
+    /// Map a new memory area
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> Option<usize> {
+        // Check for invalid parameters
+        if len == 0 || prot == 0 || (prot & !0x7) != 0 {
+            return None;
+        }
+
+        // Check for start address page alignment
+        if start % PAGE_SIZE != 0 {
+            return None;
+        }
+
+        // Round up length to page boundary
+        let aligned_len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + aligned_len);
+
+        // Convert prot to MapPermission
+        let mut map_perm = MapPermission::U;
+        if prot & 0x1 != 0 { map_perm |= MapPermission::R; }
+        if prot & 0x2 != 0 { map_perm |= MapPermission::W; }
+        if prot & 0x4 != 0 { map_perm |= MapPermission::X; }
+
+        // Check for conflicts with existing areas
+        for area in &self.areas {
+            if !(end_va <= area.vpn_range.get_start().into() ||
+                 start_va >= area.vpn_range.get_end().into()) {
+                return None;
+            }
+        }
+
+        self.insert_framed_area(start_va, end_va, map_perm);
+        Some(start + aligned_len)
+    }
+
+    /// Unmap a memory area
+    pub fn munmap(&mut self, start: usize, len: usize) -> bool {
+        // Round up length to page boundary to match mmap behavior
+        let aligned_len = (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let start_vpn = VirtAddr::from(start).floor();
+        let end_vpn = VirtAddr::from(start + aligned_len).ceil();
+
+        // Find and remove the area
+        if let Some(idx) = self.areas.iter().position(|area| {
+            area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn
+        }) {
+            let mut area = self.areas.remove(idx);
+            area.unmap(&mut self.page_table);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Change program break for sbrk syscall
+    pub fn sbrk(&mut self, old_brk: usize, new_brk: usize) -> bool {
+        if new_brk < old_brk {
+            // Shrink heap
+            let start_va = VirtAddr::from(new_brk);
+            let end_va = VirtAddr::from(old_brk);
+            if let Some(area) = self.areas.iter_mut().find(|area| {
+                area.vpn_range.get_start() <= start_va.floor() &&
+                area.vpn_range.get_end() >= end_va.ceil()
+            }) {
+                area.shrink_to(&mut self.page_table, start_va.ceil());
+                true
+            } else {
+                false
+            }
+        } else if new_brk > old_brk {
+            // Expand heap
+            let start_va = VirtAddr::from(old_brk);
+            let end_va = VirtAddr::from(new_brk);
+            if let Some(area) = self.areas.iter_mut().find(|area| {
+                area.vpn_range.get_start() <= start_va.floor() &&
+                area.vpn_range.get_end() >= start_va.ceil()
+            }) {
+                area.append_to(&mut self.page_table, end_va.ceil());
+                true
+            } else {
+                false
+            }
+        } else {
+            // No change
+            true
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {

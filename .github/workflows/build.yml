@@ -31,14 +31,49 @@ jobs:
     container:
       image: duskmoon/dev-env:rcore-ci
     steps:
+      - name: Remove Cargo proxy config
+        run: |
+          unset RUSTUP_DIST_SERVER
+          unset RUSTUP_UPDATE_ROOT
+          unset CARGO_HTTP_MULTIPLEXING
+          # 删除或重置全局配置
+          rm -f ${CARGO_HOME}/config.toml || true
+          rm -rf ${CARGO_HOME}/registry/* || true
+      - name: Update Rust toolchain
+        run: |
+          export RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static
+          export RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup
+          rustup self update
+          rustup update nightly
+          rustup default nightly
+      - name: Install cargo-binutils
+        run: |
+          echo "Skipping cargo-binutils installation due to version conflicts"
       - uses: actions/checkout@v4
+      - name: Print Cargo source info
+        run: |
+          echo "==== Print Cargo source info ===="
+          cargo search test -v || echo "cargo search failed"
+          echo "==== End Cargo source info ===="
       - name: Run tests
         run: |
           qemu-system-riscv64 --version
+          export RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static
+          export RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup
           rustup target add riscv64gc-unknown-none-elf
           git config --global --add safe.directory /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
           git clone https://github.com/LearningOS/rCore-Tutorial-Checker-2025S.git ci-user
           git clone https://github.com/LearningOS/rCore-Tutorial-Test-2025S.git ci-user/user
+          # Override Makefile to remove cargo-binutils installation
+          sed -i '/cargo install cargo-binutils/d' ci-user/Makefile
+          # Override user Makefile to use llvm tools with full paths
+          sed -i 's|OBJDUMP := llvm-objdump|OBJDUMP := $(shell rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump|g' ci-user/user/Makefile
+          sed -i 's|OBJCOPY := llvm-objcopy|OBJCOPY := $(shell rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy|g' ci-user/user/Makefile
+          # Also fix temp-user backup
+          if [ -d "ci-user/temp-user" ]; then
+            sed -i 's|OBJDUMP := llvm-objdump|OBJDUMP := $(shell rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump|g' ci-user/temp-user/Makefile
+            sed -i 's|OBJCOPY := llvm-objcopy|OBJCOPY := $(shell rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy|g' ci-user/temp-user/Makefile
+          fi
           ID=`git rev-parse --abbrev-ref HEAD | grep -oP 'ch\K[0-9]'`
           # cd ci-user && make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }}
           cd ci-user && make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }} > ../output.txt

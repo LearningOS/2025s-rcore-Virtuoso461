@@ -1,27 +1,22 @@
-//! `Arc<Inode>` -> `OSInodeInner`: In order to open files concurrently
-//! we need to wrap `Inode` into `Arc`,but `Mutex` in `Inode` prevents
-//! file systems from being accessed simultaneously
-//!
-//! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
-//! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+//! Inode implementation for file system
+
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
-use crate::sync::UPSafeCell;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use bitflags::*;
 use easy_fs::{EasyFileSystem, Inode};
 use lazy_static::*;
+use spin::Mutex;
 
-/// inode in memory
 /// A wrapper around a filesystem inode
 /// to implement File trait atop
 pub struct OSInode {
     readable: bool,
     writable: bool,
-    inner: UPSafeCell<OSInodeInner>,
+    inner: Mutex<OSInodeInner>,
 }
+
 /// The OS inode inner in 'UPSafeCell'
 pub struct OSInodeInner {
     offset: usize,
@@ -29,19 +24,18 @@ pub struct OSInodeInner {
 }
 
 impl OSInode {
-    /// create a new inode in memory
+    /// Construct an OS inode from a inode
     pub fn new(readable: bool, writable: bool, inode: Arc<Inode>) -> Self {
         Self {
             readable,
             writable,
-            inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
+            inner: Mutex::new(OSInodeInner { offset: 0, inode }),
         }
     }
-    /// read all data from the inode
+    /// Read all data inside a inode into vector
     pub fn read_all(&self) -> Vec<u8> {
-        let mut inner = self.inner.exclusive_access();
-        let mut buffer: Vec<u8> = Vec::with_capacity(512);
-        buffer.resize(512, 0);
+        let mut inner = self.inner.lock();
+        let mut buffer = [0u8; 512];
         let mut v: Vec<u8> = Vec::new();
         loop {
             let len = inner.inode.read_at(inner.offset, &mut buffer);
@@ -62,7 +56,7 @@ lazy_static! {
     };
 }
 
-/// List all apps in the root directory
+/// List all files in the root directory
 pub fn list_apps() {
     println!("/**** APPS ****");
     for app in ROOT_INODE.ls() {
@@ -72,17 +66,17 @@ pub fn list_apps() {
 }
 
 bitflags! {
-    ///  The flags argument to the open() system call is constructed by ORing together zero or more of the following values:
+    /// Open file flags
     pub struct OpenFlags: u32 {
-        /// readyonly
+        /// Read only
         const RDONLY = 0;
-        /// writeonly
+        /// Write only
         const WRONLY = 1 << 0;
-        /// read and write
+        /// Read write
         const RDWR = 1 << 1;
-        /// create new file
+        /// Create file if it does not exist
         const CREATE = 1 << 9;
-        /// truncate file size to 0
+        /// Truncate file to 0 length
         const TRUNC = 1 << 10;
     }
 }
@@ -101,26 +95,28 @@ impl OpenFlags {
     }
 }
 
-/// Open a file
-pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
+/// Open file with flags
+pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<dyn File>> {
     let (readable, writable) = flags.read_write();
     if flags.contains(OpenFlags::CREATE) {
         if let Some(inode) = ROOT_INODE.find(name) {
             // clear size
-            inode.clear();
+            if flags.contains(OpenFlags::TRUNC) {
+                inode.clear();
+            }
             Some(Arc::new(OSInode::new(readable, writable, inode)))
         } else {
             // create file
             ROOT_INODE
                 .create(name)
-                .map(|inode| Arc::new(OSInode::new(readable, writable, inode)))
+                .map(|inode| Arc::new(OSInode::new(readable, writable, inode)) as Arc<dyn File>)
         }
     } else {
         ROOT_INODE.find(name).map(|inode| {
             if flags.contains(OpenFlags::TRUNC) {
                 inode.clear();
             }
-            Arc::new(OSInode::new(readable, writable, inode))
+            Arc::new(OSInode::new(readable, writable, inode)) as Arc<dyn File>
         })
     }
 }
@@ -133,7 +129,7 @@ impl File for OSInode {
         self.writable
     }
     fn read(&self, mut buf: UserBuffer) -> usize {
-        let mut inner = self.inner.exclusive_access();
+        let mut inner = self.inner.lock();
         let mut total_read_size = 0usize;
         for slice in buf.buffers.iter_mut() {
             let read_size = inner.inode.read_at(inner.offset, *slice);
@@ -146,7 +142,7 @@ impl File for OSInode {
         total_read_size
     }
     fn write(&self, buf: UserBuffer) -> usize {
-        let mut inner = self.inner.exclusive_access();
+        let mut inner = self.inner.lock();
         let mut total_write_size = 0usize;
         for slice in buf.buffers.iter() {
             let write_size = inner.inode.write_at(inner.offset, *slice);
@@ -156,4 +152,36 @@ impl File for OSInode {
         }
         total_write_size
     }
+    fn fstat(&self) -> Stat {
+        let inner = self.inner.lock();
+        let (inode_id, is_dir, nlink) = inner.inode.get_stat();
+        Stat {
+            dev: 0,
+            ino: inode_id as u64,
+            mode: if is_dir { StatMode::DIR } else { StatMode::FILE },
+            nlink,
+            pad: [0; 7],
+        }
+    }
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+}
+
+/// Create a hard link
+pub fn link_file(new_name: &str, old_name: &str) -> bool {
+    // First get the inode ID without holding any locks
+    let old_inode_id = if let Some(old_inode) = ROOT_INODE.find(old_name) {
+        old_inode.get_inode_id()
+    } else {
+        return false;
+    };
+    
+    // Then create the link using the inode ID
+    ROOT_INODE.link(new_name, old_inode_id)
+}
+
+/// Remove a hard link
+pub fn unlink_file(name: &str) -> bool {
+    ROOT_INODE.unlink(name)
 }
