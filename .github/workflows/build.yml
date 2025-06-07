@@ -58,6 +58,8 @@ jobs:
           # Set environment variables to force registry
           export CARGO_REGISTRIES_CRATES_IO_INDEX=https://mirrors.ustc.edu.cn/crates.io-index
           export CARGO_HOME=~/.cargo
+          # Install cargo-binutils with locked dependencies to avoid version conflicts
+          cargo install cargo-binutils --locked --force || cargo install cargo-binutils --force
           ID=`git rev-parse --abbrev-ref HEAD | grep -oP 'ch\K[0-9]'`
           # cd ci-user && make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }}
           cd ci-user && CARGO_REGISTRIES_CRATES_IO_INDEX=https://mirrors.ustc.edu.cn/crates.io-index make test CHAPTER=$ID passwd=${{ secrets.BASE_TEST_TOKEN }} > ../output.txt
