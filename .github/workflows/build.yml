@@ -39,6 +39,11 @@ jobs:
           git config --global --add safe.directory /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}
           git clone https://github.com/LearningOS/rCore-Tutorial-Checker-2025S.git ci-user
           git clone https://github.com/LearningOS/rCore-Tutorial-Test-2025S.git ci-user/user
+          # Override Makefile to remove cargo-binutils installation
+          sed -i '/cargo install cargo-binutils/d' ci-user/Makefile
+          # Override user Makefile to use llvm tools instead of rust tools
+          sed -i 's/rust-objdump/llvm-objdump/g' ci-user/user/Makefile
+          sed -i 's/rust-objcopy/llvm-objcopy/g' ci-user/user/Makefile
           # Force override any existing cargo configs
           find . -name ".cargo" -type d -exec rm -rf {} + 2>/dev/null || true
           find . -name "config.toml" -path "*/.cargo/*" -delete 2>/dev/null || true
