@@ -41,6 +41,10 @@ pub struct TaskControlBlockInner {
     pub task_status: TaskStatus,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
+    /// Mutexes held by this task (for deadlock detection)
+    pub held_mutexes: Option<alloc::vec::Vec<usize>>,
+    /// Semaphores held by this task (for deadlock detection)
+    pub held_semaphores: Option<alloc::vec::Vec<usize>>,
 }
 
 impl TaskControlBlockInner {
@@ -75,6 +79,8 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    held_mutexes: None,
+                    held_semaphores: None,
                 })
             },
         }

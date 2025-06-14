@@ -2,6 +2,7 @@ use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 /// sleep syscall
 pub fn sys_sleep(ms: usize) -> isize {
     trace!(
@@ -70,10 +71,36 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
+    let deadlock_detect_enabled = process_inner.deadlock_detect_enabled;
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
     drop(process_inner);
     drop(process);
+
+    // Simple deadlock detection: check if current task already holds this mutex
+    if deadlock_detect_enabled {
+        let task = current_task().unwrap();
+        let task_inner = task.inner_exclusive_access();
+        if let Some(held_mutexes) = &task_inner.held_mutexes {
+            if held_mutexes.contains(&mutex_id) {
+                // Deadlock detected: trying to lock a mutex already held by this task
+                return -0xdead;
+            }
+        }
+        drop(task_inner);
+    }
+
     mutex.lock();
+
+    // Record that this task now holds this mutex
+    if deadlock_detect_enabled {
+        let task = current_task().unwrap();
+        let mut task_inner = task.inner_exclusive_access();
+        if task_inner.held_mutexes.is_none() {
+            task_inner.held_mutexes = Some(Vec::new());
+        }
+        task_inner.held_mutexes.as_mut().unwrap().push(mutex_id);
+    }
+
     0
 }
 /// mutex unlock syscall
@@ -91,9 +118,21 @@ pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
+    let deadlock_detect_enabled = process_inner.deadlock_detect_enabled;
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
     drop(process_inner);
     drop(process);
+
+    // Remove this mutex from held_mutexes before unlocking
+    if deadlock_detect_enabled {
+        let task = current_task().unwrap();
+        let mut task_inner = task.inner_exclusive_access();
+        if let Some(held_mutexes) = &mut task_inner.held_mutexes {
+            held_mutexes.retain(|&x| x != mutex_id);
+        }
+        drop(task_inner);
+    }
+
     mutex.unlock();
     0
 }
@@ -144,8 +183,20 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
+    let deadlock_detect_enabled = process_inner.deadlock_detect_enabled;
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
+
+    // Remove this semaphore from held_semaphores before releasing
+    if deadlock_detect_enabled {
+        let task = current_task().unwrap();
+        let mut task_inner = task.inner_exclusive_access();
+        if let Some(held_sems) = &mut task_inner.held_semaphores {
+            held_sems.retain(|&x| x != sem_id);
+        }
+        drop(task_inner);
+    }
+
     sem.up();
     0
 }
@@ -164,9 +215,53 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
+    let deadlock_detect_enabled = process_inner.deadlock_detect_enabled;
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
+
+    // Deadlock detection for semaphores
+    if deadlock_detect_enabled {
+        let task = current_task().unwrap();
+        let mut task_inner = task.inner_exclusive_access();
+
+        // Initialize held_semaphores if needed
+        if task_inner.held_semaphores.is_none() {
+            task_inner.held_semaphores = Some(Vec::new());
+        }
+
+        // Check if this semaphore is available
+        let sem_inner = sem.inner.exclusive_access();
+        let sem_available = sem_inner.count > 0;
+        drop(sem_inner);
+
+        // Deadlock detection: if semaphore is not available and we already hold other semaphores,
+        // this could create a deadlock scenario
+        if !sem_available {
+            let held_sems = task_inner.held_semaphores.as_ref().unwrap();
+
+            // If we already hold any semaphores and are trying to acquire an unavailable one,
+            // this could create a deadlock scenario
+            if !held_sems.is_empty() {
+                drop(task_inner);
+                return -0xdead;
+            }
+        }
+
+        drop(task_inner);
+    }
+
     sem.down();
+
+    // Record that this task now holds this semaphore (only after successful acquisition)
+    if deadlock_detect_enabled {
+        let task = current_task().unwrap();
+        let mut task_inner = task.inner_exclusive_access();
+        if let Some(held_semaphores) = &mut task_inner.held_semaphores {
+            held_semaphores.push(sem_id);
+        }
+        drop(task_inner);
+    }
+
     0
 }
 /// condvar create syscall
@@ -245,7 +340,10 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 /// enable deadlock detection syscall
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
-pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
-    trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+pub fn sys_enable_deadlock_detect(enabled: usize) -> isize {
+    trace!("kernel: sys_enable_deadlock_detect enabled={}", enabled);
+    let process = current_process();
+    let mut process_inner = process.inner_exclusive_access();
+    process_inner.deadlock_detect_enabled = enabled != 0;
+    0
 }
